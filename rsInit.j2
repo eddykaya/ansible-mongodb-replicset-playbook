@@ -1,0 +1,11 @@
+rs.initiate();
+sleep(5000);
+rsconfig = rs.config();
+rsconfig.members[0].host = "{{ inventory_hostname }}:27017";
+rs.reconfig(rsconfig);
+sleep(1000);
+{% for host in groups['dbservers'] %}
+rs.add("{{ host }}:27017");
+sleep(1000);
+{% endfor %}
+printjson(rs.status());

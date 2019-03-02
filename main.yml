@@ -1,0 +1,107 @@
+- hosts: dbservers
+  remote_user: root
+  tasks:
+    - name: install pymongo
+      pip:
+        name:
+          - pymongo
+
+    - name: add mongodb ppa key
+      apt_key:
+        id: 9DA31620334BD75D9DCB49F368818C72E52529D4
+        url: https://www.mongodb.org/static/pgp/server-4.0.asc
+
+    - name: add mongo ppa
+      apt_repository:
+        repo: "deb https://repo.mongodb.org/apt/ubuntu bionic/mongodb-org/4.0 multiverse bionic main"
+        update_cache: true
+
+    - name: install mongo-client
+      apt:
+        name: mongodb-org-shell
+        state: present
+
+    - name: setup mongodb data directory
+      file:
+        path: /data/mongodb
+        state: directory
+        owner: root
+        group: root
+
+    - name: setup mongodb config directory
+      file:
+        path: /opt/mongodb/config
+        state: directory
+        owner: root
+        group: root
+
+    - name: setup mongodb ssl directory
+      file:
+        path: /opt/mongodb/ssl
+        state: directory
+        owner: root
+        group: root
+
+    - name: setup docker-compose directory
+      file:
+        path: /opt/mongodb
+        state: directory
+        owner: root
+        group: root
+
+    - name: copy docker-compose file
+      copy:
+        src: "{{ rs_index }}/docker-compose.yml"
+        dest: /opt/mongodb/docker-compose.yml
+
+    - name: copy replSet init file
+      run_once: true
+      template: "src=./rsInit.js dest=/opt/mongodb/rsInit.js"
+
+    - name: copy mongod.conf file
+      template: "src={{ rs_index }}/mongod.conf dest=/opt/mongodb/config/mongod.conf"
+
+    - name: copy replicaset keyfile
+      copy:
+        src: ./keyfile
+        dest: /opt/mongodb/ssl/keyfile
+        mode: 0400
+
+    - name: create mongo.pem file
+      command: "touch /opt/mongodb/ssl/mongo.pem"
+
+    #     cat obivously does not work
+    #    - name: build ssl certificate
+    #      command: "cat /etc/letsencrypt/live/{{ inventory_hostname}}/fullchain.pem /etc/letsencrypt/live/{{ inventory_hostname }}/privkey.pem > /opt/mongodb/ssl/mongo.pem"
+
+    - name: add cron entry to build new certificate
+      cron:
+        name: "build mongo pem"
+        user: "root"
+        minute: "1"
+        hour: "0"
+        weekday: "0"
+        job: "cat /etc/letsencrypt/live/{{ inventory_hostname }}/{fullchain.pem,privkey.pem} > /opt/mongodb/ssl/mongo.pem"
+
+    - name: start initial mongo container and create admin user
+      docker_container:
+        name: mongodb_init
+        image: mongo:4
+        state: started
+        env: MONGO_INITDB_ROOT_USERNAME={{ mongodb_root_username }}
+          MONGO_INITDB_ROOT_PASSWORD={{ mongodb_root_password }}
+        volumes:
+          - /data/mongodb:/data/db:rw
+        stop_timeout: 30
+
+    - name: stop initial mongo container
+      docker_container:
+        name: mongodb_init
+        state: stopped
+
+    - name: start mongo container
+      command: "docker-compose -f /opt/mongodb/docker-compose.yml up -d --force-recreate"
+
+    - name: Initialize the replication set
+      run_once: true
+      command: "mongo --ssl -u {{ mongodb_root_username }} -p {{ mongodb_root_password }} --authenticationDatabase admin {{ inventory_hostname }} /opt/mongodb/rsInit.js"
